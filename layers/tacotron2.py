@@ -15,7 +15,7 @@ class ConvBNBlock(nn.Module):
                            kernel_size,
                            padding=padding)
         norm = nn.BatchNorm1d(out_channels)
-        dropout = nn.Dropout(p=0.5)
+        dropout = nn.Dropout(p=0.35)
         if nonlinear == 'relu':
             self.net = nn.Sequential(conv1d, norm, nn.ReLU(), dropout)
         elif nonlinear == 'tanh':
