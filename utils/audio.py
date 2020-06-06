@@ -3,6 +3,8 @@ import soundfile as sf
 import numpy as np
 import scipy.io
 import scipy.signal
+import torch
+import torchaudio as ta
 
 from TTS.utils.data import StandardScaler
 
@@ -31,6 +33,7 @@ class AudioProcessor(object):
                  trim_db=60,
                  do_sound_norm=False,
                  stats_path=None,
+                 use_gpu=True,
                  **_):
 
         print(" > Setting up Audio Processor...")
@@ -66,9 +69,11 @@ class AudioProcessor(object):
         members = vars(self)
         for key, value in members.items():
             print(" | > {}:{}".format(key, value))
+        self.use_gpu = torch.cuda.is_available() and use_gpu
+
         # create spectrogram utils
         self.mel_basis = self._build_mel_basis()
-        self.inv_mel_basis = np.linalg.pinv(self._build_mel_basis())
+        self.inv_mel_basis = self._build_inv_mel_basis()
         # setup scaler
         if stats_path:
             mel_mean, mel_std, linear_mean, linear_std, _ = self.load_stats(stats_path)
@@ -78,16 +83,48 @@ class AudioProcessor(object):
             self.clip_norm = None
             self.symmetric_norm = None
 
+
     ### setting up the parameters ###
     def _build_mel_basis(self, ):
         if self.mel_fmax is not None:
             assert self.mel_fmax <= self.sample_rate // 2
+
+        if self.use_gpu:
+            print("_build_mel_basis")
+            return ta.functional.create_fb_matrix(
+                n_mels=self.num_mels,
+                sample_rate=self.sample_rate,
+                f_min=self.mel_fmin,
+                f_max=self.mel_fmax,
+                n_freqs=(self.n_fft // 2) + 1
+            ).t()
         return librosa.filters.mel(
             self.sample_rate,
             self.n_fft,
             n_mels=self.num_mels,
             fmin=self.mel_fmin,
             fmax=self.mel_fmax)
+
+    def _build_inv_mel_basis(self, ):
+        if self.mel_fmax is not None:
+            assert self.mel_fmax <= self.sample_rate // 2
+
+        if self.use_gpu:
+            print("_build_inv_mel_basis")
+            return torch.pinverse(ta.functional.create_fb_matrix(
+                n_mels=self.num_mels,
+                sample_rate=self.sample_rate,
+                f_min=self.mel_fmin,
+                f_max=self.mel_fmax,
+                n_freqs=(self.n_fft // 2) + 1
+            ).t())
+        return np.linalg.pinv(librosa.filters.mel(
+            self.sample_rate,
+            self.n_fft,
+            n_mels=self.num_mels,
+            fmin=self.mel_fmin,
+            fmax=self.mel_fmax)
+        )            
 
     def _stft_parameters(self, ):
         """Compute necessary stft parameters with given time values"""
@@ -102,7 +139,10 @@ class AudioProcessor(object):
     def _normalize(self, S):
         """Put values in [0, self.max_norm] or [-self.max_norm, self.max_norm]"""
         #pylint: disable=no-else-return
-        S = S.copy()
+        if False and self.use_gpu:
+            S = S.numpy().copy()
+        else:
+            S = S.copy()
         if self.signal_norm:
             # mean-var scaling
             if hasattr(self, 'mel_scaler'):
@@ -192,18 +232,29 @@ class AudioProcessor(object):
     def apply_preemphasis(self, x):
         if self.preemphasis == 0:
             raise RuntimeError(" [!] Preemphasis is set 0.0.")
+        if self.use_gpu:
+            return ta.functional.lfilter(x, [1], [1, -self.preemphasis])
         return scipy.signal.lfilter([1, -self.preemphasis], [1], x)
 
     def apply_inv_preemphasis(self, x):
         if self.preemphasis == 0:
             raise RuntimeError(" [!] Preemphasis is set 0.0.")
+        if self.use_gpu:
+            return ta.functional.lfilter(x, [1, -self.preemphasis], [1])
         return scipy.signal.lfilter([1], [1, -self.preemphasis], x)
 
     ### SPECTROGRAMs ###
     def _linear_to_mel(self, spectrogram):
+        #print("mel_basis", self.mel_basis.shape, "spectrogram", spectrogram.shape)
+        if self.use_gpu:
+            #print("_linear_to_mel")
+            return torch.matmul(self.mel_basis, torch.Tensor(spectrogram)).numpy()
         return np.dot(self.mel_basis, spectrogram)
 
     def _mel_to_linear(self, mel_spec):
+        if self.use_gpu:
+            #print("_mel_to_linear")
+            return torch.max(torch.matmul(self.inv_mel_basis, torch.Tensor(mel_spec)), 1e-10).numpy()
         return np.maximum(1e-10, np.dot(self.inv_mel_basis, mel_spec))
 
     def spectrogram(self, y):
@@ -215,11 +266,32 @@ class AudioProcessor(object):
         return self._normalize(S)
 
     def melspectrogram(self, y):
+        print("melspectrogram")
         if self.preemphasis != 0:
-            D = self._stft(self.apply_preemphasis(y))
+            _y = self._stft(self.apply_preemphasis(y))
         else:
-            D = self._stft(y)
-        S = self._amp_to_db(self._linear_to_mel(np.abs(D)))
+            _y = y
+        if self.use_gpu:
+            
+            melspec = ta.transforms.MelSpectrogram(
+                sample_rate=self.sample_rate, 
+                n_fft=self.n_fft, 
+                win_length=self.win_length, 
+                hop_length=self.hop_length, 
+                f_min=self.mel_fmin, 
+                f_max=self.mel_fmax, 
+                n_mels=self.num_mels,
+                window_fn=torch.hamming_window #,
+                #power=self.power,
+                #normalized=self.signal_norm
+            )(torch.Tensor(_y))
+            return melspec
+        D = self._stft(_y)
+        if False and self.use_gpu:
+            _D = torch.Tensor(D)
+            S = ta.transforms.AmplitudeToDB()(_D)
+        else:
+            S = self._amp_to_db(self._linear_to_mel(np.abs(D)))
         return self._normalize(S)
 
     def inv_spectrogram(self, spectrogram):
@@ -241,6 +313,7 @@ class AudioProcessor(object):
         return self._griffin_lim(S**self.power)
 
     def out_linear_to_mel(self, linear_spec):
+        print("out_linear_to_mel")
         S = self._denormalize(linear_spec)
         S = self._db_to_amp(S)
         S = self._linear_to_mel(np.abs(S))
@@ -250,6 +323,9 @@ class AudioProcessor(object):
 
     ### STFT and ISTFT ###
     def _stft(self, y):
+        if False and self.use_gpu:
+            _y = torch.as_tensor(y)
+            return torch.stft(_y, n_fft=self.n_fft, hop_length=self.hop_length, win_length=self.win_length, pad_mode='constant')
         return librosa.stft(
             y=y,
             n_fft=self.n_fft,
@@ -259,6 +335,9 @@ class AudioProcessor(object):
         )
 
     def _istft(self, y):
+        if self.use_gpu:
+            print("_istft")
+            return ta.functional.istft(y, hop_length=self.hop_length, win_length=self.win_length)
         return librosa.istft(
             y, hop_length=self.hop_length, win_length=self.win_length)
 
