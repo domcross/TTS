@@ -3,7 +3,15 @@ installed = {pkg.key for pkg in pkg_resources.working_set}  #pylint: disable=not
 if 'tensorflow' in installed or 'tensorflow-gpu' in installed:
     import tensorflow as tf
 import torch
-import numpy as np
+
+import importlib
+use_cupy = False #importlib.util.find_spec("cupy") is not None
+if use_cupy:
+    print("{} using cupy".format(__name__))
+    import cupy as np
+else:
+    import numpy as np
+
 from .text import text_to_sequence, phoneme_to_sequence
 
 

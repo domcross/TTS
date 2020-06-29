@@ -1,10 +1,18 @@
 import librosa
 import soundfile as sf
-import numpy as np
+
+import importlib
+cupy_available = importlib.util.find_spec("cupy") is not None
+if cupy_available:
+    import cupy
+import numpy
+np = None
+
 import scipy.io
 import scipy.signal
 
 from TTS.utils.data import StandardScaler
+from .lr_custom import stft, istft
 
 
 class AudioProcessor(object):
@@ -31,9 +39,19 @@ class AudioProcessor(object):
                  trim_db=60,
                  do_sound_norm=False,
                  stats_path=None,
+                 use_gpu=True,
                  **_):
 
         print(" > Setting up Audio Processor...")
+        if use_gpu and cupy_available:
+            self.use_cupy = True
+            #print("...using cupy")
+            self.np = importlib.import_module("cupy")
+        else:
+            self.use_cupy = False
+            #print("...using numpy")
+            self.np = importlib.import_module("numpy")
+
         # setup class attributed
         self.sample_rate = sample_rate
         self.num_mels = num_mels
@@ -68,7 +86,7 @@ class AudioProcessor(object):
             print(" | > {}:{}".format(key, value))
         # create spectrogram utils
         self.mel_basis = self._build_mel_basis()
-        self.inv_mel_basis = np.linalg.pinv(self._build_mel_basis())
+        self.inv_mel_basis = self.np.linalg.pinv(self._build_mel_basis())
         # setup scaler
         if stats_path:
             mel_mean, mel_std, linear_mean, linear_std, _ = self.load_stats(stats_path)
@@ -78,16 +96,20 @@ class AudioProcessor(object):
             self.clip_norm = None
             self.symmetric_norm = None
 
+
     ### setting up the parameters ###
     def _build_mel_basis(self, ):
         if self.mel_fmax is not None:
-            assert self.mel_fmax <= self.sample_rate // 2
-        return librosa.filters.mel(
+            assert self.mel_fmax <= self.sample_rate // 2, "mel_fmax '{}' <= '{}' sample_rate // 2".format(self.mel_fmax, self.sample_rate // 2)
+        mb = librosa.filters.mel(
             self.sample_rate,
             self.n_fft,
             n_mels=self.num_mels,
             fmin=self.mel_fmin,
             fmax=self.mel_fmax)
+        if self.use_cupy:
+            mb = self.np.asarray(mb)
+        return mb
 
     def _stft_parameters(self, ):
         """Compute necessary stft parameters with given time values"""
@@ -118,12 +140,12 @@ class AudioProcessor(object):
             if self.symmetric_norm:
                 S_norm = ((2 * self.max_norm) * S_norm) - self.max_norm
                 if self.clip_norm:
-                    S_norm = np.clip(S_norm, -self.max_norm, self.max_norm)
+                    S_norm = self.np.clip(S_norm, -self.max_norm, self.max_norm)
                 return S_norm
             else:
                 S_norm = self.max_norm * S_norm
                 if self.clip_norm:
-                    S_norm = np.clip(S_norm, 0, self.max_norm)
+                    S_norm = self.np.clip(S_norm, 0, self.max_norm)
                 return S_norm
         else:
             return S
@@ -143,12 +165,12 @@ class AudioProcessor(object):
                     raise RuntimeError(' [!] Mean-Var stats does not match the given feature dimensions.')
             if self.symmetric_norm:
                 if self.clip_norm:
-                    S_denorm = np.clip(S_denorm, -self.max_norm, self.max_norm)
+                    S_denorm = self.np.clip(S_denorm, -self.max_norm, self.max_norm)
                 S_denorm = ((S_denorm + self.max_norm) * -self.min_level_db / (2 * self.max_norm)) + self.min_level_db
                 return S_denorm + self.ref_level_db
             else:
                 if self.clip_norm:
-                    S_denorm = np.clip(S_denorm, 0, self.max_norm)
+                    S_denorm = self.np.clip(S_denorm, 0, self.max_norm)
                 S_denorm = (S_denorm * -self.min_level_db /
                             self.max_norm) + self.min_level_db
                 return S_denorm + self.ref_level_db
@@ -157,7 +179,7 @@ class AudioProcessor(object):
 
     ### Mean-STD scaling ###
     def load_stats(self, stats_path):
-        stats = np.load(stats_path, allow_pickle=True).item()  #pylint: disable=unexpected-keyword-arg
+        stats = self.np.load(stats_path, allow_pickle=True).item()  #pylint: disable=unexpected-keyword-arg
         mel_mean = stats['mel_mean']
         mel_std = stats['mel_std']
         linear_mean = stats['linear_mean']
@@ -182,11 +204,11 @@ class AudioProcessor(object):
     ### DB and AMP conversion ###
     # pylint: disable=no-self-use
     def _amp_to_db(self, x):
-        return 20 * np.log10(np.maximum(1e-5, x))
+        return 20 * self.np.log10(self.np.maximum(1e-5, x))
 
     # pylint: disable=no-self-use
     def _db_to_amp(self, x):
-        return np.power(10.0, x * 0.05)
+        return self.np.power(10.0, x * 0.05)
 
     ### Preemphasis ###
     def apply_preemphasis(self, x):
@@ -201,55 +223,89 @@ class AudioProcessor(object):
 
     ### SPECTROGRAMs ###
     def _linear_to_mel(self, spectrogram):
-        return np.dot(self.mel_basis, spectrogram)
+        return self.np.dot(self.mel_basis, spectrogram)
 
     def _mel_to_linear(self, mel_spec):
-        return np.maximum(1e-10, np.dot(self.inv_mel_basis, mel_spec))
+        return self.np.maximum(1e-10, self.np.dot(self.inv_mel_basis, mel_spec))
 
     def spectrogram(self, y):
+        print(">spectrogram")
+        if self.use_cupy:
+            y = self.np.asarray(y)
         if self.preemphasis != 0:
             D = self._stft(self.apply_preemphasis(y))
         else:
             D = self._stft(y)
-        S = self._amp_to_db(np.abs(D))
-        return self._normalize(S)
+        S = self._amp_to_db(self.np.abs(D))
+        S = self._normalize(S)
+        if self.use_cupy:
+            return self.np.asnumpy(S)
+        return S
 
     def melspectrogram(self, y):
+        print(">melspectrogram", type(y))
+        if self.use_cupy:
+            print(">>use_cupy")
+            y = cupy.array(y) #self.np.asarray(y)
+            print("y", type(y))
         if self.preemphasis != 0:
             D = self._stft(self.apply_preemphasis(y))
         else:
             D = self._stft(y)
-        S = self._amp_to_db(self._linear_to_mel(np.abs(D)))
-        return self._normalize(S)
+        S = self._amp_to_db(self._linear_to_mel(self.np.abs(D)))
+        S = self._normalize(S)
+        if self.use_cupy:
+            return self.np.asnumpy(S)
+        return S
 
     def inv_spectrogram(self, spectrogram):
         """Converts spectrogram to waveform using librosa"""
+        print(">inv_spectrogram")
+        if self.use_cupy:
+            S = self.np.array(S)
         S = self._denormalize(spectrogram)
         S = self._db_to_amp(S)
         # Reconstruct phase
+        S = self._griffin_lim(S**self.power)
         if self.preemphasis != 0:
-            return self.apply_inv_preemphasis(self._griffin_lim(S**self.power))
-        return self._griffin_lim(S**self.power)
+            S = self.apply_inv_preemphasis(S)
+        if self.use_cupy:
+            S = self.np.asnumpy(S)
+        return S
 
     def inv_melspectrogram(self, mel_spectrogram):
         '''Converts melspectrogram to waveform using librosa'''
+        print("inv_melspectrogram")
+        if self.use_cupy:
+            mel_spectrogram = self.np.asarray(mel_spectrogram)
         D = self._denormalize(mel_spectrogram)
         S = self._db_to_amp(D)
         S = self._mel_to_linear(S)  # Convert back to linear
+        gl = self._griffin_lim(S**self.power)
         if self.preemphasis != 0:
-            return self.apply_inv_preemphasis(self._griffin_lim(S**self.power))
-        return self._griffin_lim(S**self.power)
+            gl = self.apply_inv_preemphasis(gl)
+        if self.use_cupy:
+            return self.np.asnumpy(gl)
+        return gl
 
     def out_linear_to_mel(self, linear_spec):
         S = self._denormalize(linear_spec)
         S = self._db_to_amp(S)
-        S = self._linear_to_mel(np.abs(S))
+        S = self._linear_to_mel(self.np.abs(S))
         S = self._amp_to_db(S)
         mel = self._normalize(S)
         return mel
 
     ### STFT and ISTFT ###
     def _stft(self, y):
+        if self.use_cupy:
+            return stft( 
+                y=y,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+                pad_mode='constant'
+            )
         return librosa.stft(
             y=y,
             n_fft=self.n_fft,
@@ -259,22 +315,24 @@ class AudioProcessor(object):
         )
 
     def _istft(self, y):
+        if self.use_cupy:
+            return istft(y, hop_length=self.hop_length, win_length=self.win_length)
         return librosa.istft(
             y, hop_length=self.hop_length, win_length=self.win_length)
 
     def _griffin_lim(self, S):
-        angles = np.exp(2j * np.pi * np.random.rand(*S.shape))
-        S_complex = np.abs(S).astype(np.complex)
+        angles = self.np.exp(2j * self.np.pi * self.np.random.rand(*S.shape))
+        S_complex = self.np.abs(S).astype(self.np.complex)
         y = self._istft(S_complex * angles)
         for _ in range(self.griffin_lim_iters):
-            angles = np.exp(1j * np.angle(self._stft(y)))
+            angles = self.np.exp(1j * self.np.angle(self._stft(y)))
             y = self._istft(S_complex * angles)
         return y
 
     def compute_stft_paddings(self, x, pad_sides=1):
         '''compute right padding (final frame) or both sides padding (first and final frames)
         '''
-        assert pad_sides in (1, 2)
+        assert pad_sides in (1, 2), "pad_sides '{}' not in (1, 2)".format(pad_sides)
         pad = (x.shape[0] // self.hop_length + 1) * self.hop_length - x.shape[0]
         if pad_sides == 1:
             return 0, pad
@@ -286,7 +344,7 @@ class AudioProcessor(object):
         hop_length = int(window_length / 4)
         threshold = self._db_to_amp(threshold_db)
         for x in range(hop_length, len(wav) - window_length, hop_length):
-            if np.max(wav[x:x + window_length]) < threshold:
+            if self.np.max(wav[x:x + window_length]) < threshold:
                 return x + hop_length
         return len(wav)
 
@@ -307,40 +365,42 @@ class AudioProcessor(object):
             x, sr = sf.read(filename)
         else:
             x, sr = librosa.load(filename, sr=sr)
+        #if self.use_cupy:
+        #    x = self.np.asarray(x)
         if self.do_trim_silence:
             try:
                 x = self.trim_silence(x)
             except ValueError:
                 print(f' [!] File cannot be trimmed for silence - {filename}')
-        assert self.sample_rate == sr, "%s vs %s"%(self.sample_rate, sr)
+        assert self.sample_rate == sr, "%s vs %s - %s"%(self.sample_rate, sr, filename)
         if self.do_sound_norm:
             x = self.sound_norm(x)
         return x
 
     def save_wav(self, wav, path):
-        wav_norm = wav * (32767 / max(0.01, np.max(np.abs(wav))))
-        scipy.io.wavfile.write(path, self.sample_rate, wav_norm.astype(np.int16))
+        wav_norm = wav * (32767 / max(0.01, self.np.max(self.np.abs(wav))))
+        scipy.io.wavfile.write(path, self.sample_rate, wav_norm.astype(self.np.int16))
 
     @staticmethod
     def mulaw_encode(wav, qc):
         mu = 2 ** qc - 1
-        # wav_abs = np.minimum(np.abs(wav), 1.0)
-        signal = np.sign(wav) * np.log(1 + mu * np.abs(wav)) / np.log(1. + mu)
+        # wav_abs = self.np.minimum(self.np.abs(wav), 1.0)
+        signal = numpy.sign(wav) * numpy.log(1 + mu * numpy.abs(wav)) / numpy.log(1. + mu)
         # Quantize signal to the specified number of levels.
         signal = (signal + 1) / 2 * mu + 0.5
-        return np.floor(signal,)
+        return numpy.floor(signal,)
 
     @staticmethod
     def mulaw_decode(wav, qc):
         """Recovers waveform from quantized values."""
         mu = 2 ** qc - 1
-        x = np.sign(wav) / mu * ((1 + mu) ** np.abs(wav) - 1)
+        x = numpy.sign(wav) / mu * ((1 + mu) ** numpy.abs(wav) - 1)
         return x
 
 
     @staticmethod
     def encode_16bits(x):
-        return np.clip(x * 2**15, -2**15, 2**15 - 1).astype(np.int16)
+        return numpy.clip(x * 2**15, -2**15, 2**15 - 1).astype(numpy.int16)
 
     @staticmethod
     def quantize(x, bits):

@@ -1,4 +1,10 @@
-import numpy as np
+import importlib
+use_cupy = importlib.util.find_spec("cupy") is not None
+if False and use_cupy:
+    print("{} using cupy".format(__name__))
+    import cupy as np
+else:
+    import numpy as np
 
 
 def _pad_data(x, length):
@@ -9,6 +15,7 @@ def _pad_data(x, length):
 
 
 def prepare_data(inputs):
+    print("data.prepare_data")
     max_len = max((len(x) for x in inputs))
     return np.stack([_pad_data(x, max_len) for x in inputs])
 
@@ -24,6 +31,7 @@ def _pad_tensor(x, length):
 
 
 def prepare_tensor(inputs, out_steps):
+    print("data.prepare_tensor")
     max_len = max((x.shape[1] for x in inputs))
     remainder = max_len % out_steps
     pad_len = max_len + (out_steps - remainder) if remainder > 0 else max_len
@@ -38,6 +46,7 @@ def _pad_stop_target(x, length):
 
 
 def prepare_stop_target(inputs, out_steps):
+    print("data.prepare_stop_target")
     """ Pad row vectors with 1. """
     max_len = max((x.shape[0] for x in inputs))
     remainder = max_len % out_steps
@@ -46,6 +55,7 @@ def prepare_stop_target(inputs, out_steps):
 
 
 def pad_per_step(inputs, pad_len):
+    print("data.pad_per_step")
     return np.pad(
         inputs, [[0, 0], [0, 0], [0, pad_len]],
         mode='constant',
@@ -56,20 +66,24 @@ def pad_per_step(inputs, pad_len):
 class StandardScaler():
 
     def set_stats(self, mean, scale):
+        print("data.set_stats")
         self.mean_ = mean
         self.scale_ = scale
 
     def reset_stats(self):
+        print("data.reset_stats")
         delattr(self, 'mean_')
         delattr(self, 'scale_')
 
     def transform(self, X):
+        print("data.transform")
         X = np.asarray(X)
         X -= self.mean_
         X /= self.scale_
         return X
 
     def inverse_transform(self, X):
+        print("data.inverse_transform")
         X = np.asarray(X)
         X *= self.scale_
         X += self.mean_

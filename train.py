@@ -5,7 +5,14 @@ import glob
 import time
 import traceback
 
-import numpy as np
+import importlib
+use_cupy = False #importlib.util.find_spec("cupy") is not None
+if use_cupy:
+    print("{} using cupy".format(__name__))
+    import cupy as np
+else:
+    import numpy as np
+
 import torch
 from torch.utils.data import DataLoader
 
@@ -42,6 +49,8 @@ print(" > Number of GPUs: ", num_gpus)
 
 
 def setup_loader(ap, r, is_val=False, verbose=False):
+    print("setup_loader")
+    print("ap", ap, "r", r, "is_val", is_val, "verbose", verbose)
     if is_val and not c.run_eval:
         loader = None
     else:
@@ -72,6 +81,7 @@ def setup_loader(ap, r, is_val=False, verbose=False):
             num_workers=c.num_val_loader_workers
             if is_val else c.num_loader_workers,
             pin_memory=False)
+    print("return loader", loader)
     return loader
 
 
@@ -145,7 +155,9 @@ def train(model, criterion, optimizer, optimizer_st, scheduler,
         batch_n_iter = int(len(data_loader.dataset) / c.batch_size)
     end_time = time.time()
     c_logger.print_train_start()
+    print("train data_loader", data_loader)
     for num_iter, data in enumerate(data_loader):
+        print("num_iter", num_iter) #, "data", data)
         start_time = time.time()
 
         # format data

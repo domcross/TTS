@@ -1,5 +1,15 @@
 import os
-import numpy as np
+
+import importlib
+cupy_available = importlib.util.find_spec("cupy") is not None
+if False and cupy_available:
+    print("{} using cupy".format(__name__))
+    import cupy as np
+else:
+    print("{} using numpy".format(__name__))
+    import numpy as np
+import numpy
+
 import collections
 import torch
 import random
@@ -70,12 +80,14 @@ class MyDataset(Dataset):
         self.sort_items()
 
     def load_wav(self, filename):
+        #print("MyDataset load_wav", filename)
         audio = self.ap.load_wav(filename)
         return audio
 
     @staticmethod
     def load_np(filename):
-        data = np.load(filename).astype('float32')
+        #print("MyDataset load_np", filename)
+        data = np.load(filename).astype(np.float32) #.astype('float32')
         return data
 
     def _generate_and_cache_phoneme_sequence(self, text, cache_path):
@@ -83,6 +95,7 @@ class MyDataset(Dataset):
         since the usage is for subsequent caching, we never add bos and
         eos chars here. Instead we add those dynamically later; based on the
         config option."""
+        #print("MyDataset _generate_and_cache_phoneme_sequence", text, cache_path)
         phonemes = phoneme_to_sequence(text, [self.cleaners],
                                        language=self.phoneme_language,
                                        enable_eos_bos=False,
@@ -92,6 +105,7 @@ class MyDataset(Dataset):
         return phonemes
 
     def _load_or_generate_phoneme_sequence(self, wav_file, text):
+        #print("MyDataset _load_or_generate_phoneme_sequence", wav_file, text)
         file_name = os.path.basename(wav_file).split('.')[0]
         cache_path = os.path.join(self.phoneme_cache_path,
                                   file_name + '_phoneme.npy')
@@ -111,6 +125,7 @@ class MyDataset(Dataset):
         return phonemes
 
     def load_data(self, idx):
+        #print("MyDataset load_data", idx)
         text, wav_file, speaker_name = self.items[idx]
         wav = np.asarray(self.load_wav(wav_file), dtype=np.float32)
 
@@ -133,7 +148,12 @@ class MyDataset(Dataset):
 
     def sort_items(self):
         r"""Sort instances based on text length in ascending order"""
-        lengths = np.array([len(ins[0]) for ins in self.items])
+        #if use_cupy:
+        #    lengths = numpy.array([len(ins[0]) for ins in self.items])
+        #else:
+        #    lengths = np.array([len(ins[0]) for ins in self.items])
+        #print("MyDataset sort_items")
+        lengths = numpy.array([len(ins[0]) for ins in self.items])
 
         idxs = np.argsort(lengths)
         new_items = []
@@ -155,9 +175,9 @@ class MyDataset(Dataset):
         self.items = new_items
 
         if self.verbose:
-            print(" | > Max length sequence: {}".format(np.max(lengths)))
-            print(" | > Min length sequence: {}".format(np.min(lengths)))
-            print(" | > Avg length sequence: {}".format(np.mean(lengths)))
+            print(" | > Max length sequence: {}".format(numpy.max(lengths)))
+            print(" | > Min length sequence: {}".format(numpy.min(lengths)))
+            print(" | > Avg length sequence: {}".format(numpy.mean(lengths)))
             print(" | > Num. instances discarded by max-min (max={}, min={}) seq limits: {}".format(
                 self.max_seq_len, self.min_seq_len, len(ignored)))
             print(" | > Batch group size: {}.".format(self.batch_group_size))
@@ -176,7 +196,7 @@ class MyDataset(Dataset):
             3. PAD sequences wrt r.
             4. Load to Torch.
         """
-
+        #print("MyDataset collate_fn")
         # Puts each data field into a tensor with outer dimension batch size
         if isinstance(batch[0], collections.Mapping):
 
@@ -196,7 +216,6 @@ class MyDataset(Dataset):
 
             # compute features
             mel = [self.ap.melspectrogram(w).astype('float32') for w in wav]
-
             mel_lengths = [m.shape[1] for m in mel]
 
             # compute 'stop token' targets
@@ -226,10 +245,11 @@ class MyDataset(Dataset):
 
             # compute linear spectrogram
             if self.compute_linear_spec:
-                linear = [self.ap.spectrogram(w).astype('float32') for w in wav]
+                #linear = [self.ap.spectrogram(w).astype('float32') for w in wav]
+                linear = [self.ap.spectrogram(w).astype(np.float32) for w in wav]
                 linear = prepare_tensor(linear, self.outputs_per_step)
                 linear = linear.transpose(0, 2, 1)
-                assert mel.shape[1] == linear.shape[1]
+                assert mel.shape[1] == linear.shape[1], "mel.shape '{}' != '{}' linear.shape".format(mel.shape[1], linear.shape[1])
                 linear = torch.FloatTensor(linear).contiguous()
             else:
                 linear = None
