@@ -10,7 +10,13 @@ hyperparameter. Some cleaners are English-specific. You'll typically want to use
      the symbols in symbols.py to match your data).
 '''
 
+import pkg_resources
+installed = {pkg.key for pkg in pkg_resources.working_set}  #pylint: disable=not-an-iterable
 import re
+if 'german_transliterate' in installed:
+    from german_transliterate.core import GermanTransliterate  # https://github.com/repodiac/german_transliterate
+if 'phonemizer' in installed:
+    from phonemizer.phonemize import phonemize
 from unidecode import unidecode
 from .number_norm import normalize_numbers
 
@@ -136,3 +142,17 @@ def phoneme_cleaners(text):
     text = remove_aux_symbols(text)
     text = collapse_whitespace(text)
     return text
+
+def german_phoneme_cleaners(text):
+    if 'german_transliterate' in installed:
+        return GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)
+    elif 'phonemizer' in installed and 'espeakng' in installed:
+        text = convert_to_ascii(text)
+        #text = expand_numbers(text)
+        #text = expand_abbreviations(text)
+        text = replace_symbols(text)
+        text = remove_aux_symbols(text)
+        text = collapse_whitespace(text)
+        return phonemize(text, language='de', backend='espeak'))
+    else:
+        raise NotImplementedError("german_phoneme_cleaners requires package 'german_transliterate' or package 'phonemizer' and 'espeakng' installed!")
