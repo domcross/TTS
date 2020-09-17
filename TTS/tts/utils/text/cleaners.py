@@ -13,7 +13,7 @@ hyperparameter. Some cleaners are English-specific. You'll typically want to use
 import pkg_resources
 installed = {pkg.key for pkg in pkg_resources.working_set}  #pylint: disable=not-an-iterable
 import re
-if 'german_transliterate' in installed:
+if 'german-transliterate' in installed:
     from german_transliterate.core import GermanTransliterate  # https://github.com/repodiac/german_transliterate
 if 'phonemizer' in installed:
     from phonemizer.phonemize import phonemize
@@ -144,15 +144,23 @@ def phoneme_cleaners(text):
     return text
 
 def german_phoneme_cleaners(text):
-    if 'german_transliterate' in installed:
-        return GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)
+    print("gpc text:", text)
+    ret = text
+
+    if 'german-transliterate' in installed:
+        print("german-transliterate")
+        ret =  GermanTransliterate(replace={';': ',', ':': ' '}, sep_abbreviation=' -- ').transliterate(text)
     elif 'phonemizer' in installed and 'espeakng' in installed:
+        print("phonemizer")
         text = convert_to_ascii(text)
         #text = expand_numbers(text)
         #text = expand_abbreviations(text)
         text = replace_symbols(text)
         text = remove_aux_symbols(text)
         text = collapse_whitespace(text)
-        return phonemize(text, language='de', backend='espeak'))
+        ret = phonemize(text, language='de', backend='espeak')
     else:
         raise NotImplementedError("german_phoneme_cleaners requires package 'german_transliterate' or package 'phonemizer' and 'espeakng' installed!")
+
+    print("gpc ret :", ret)
+    return ret
